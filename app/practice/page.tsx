@@ -1,104 +1,230 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 
 // ─── Types ───────────────────────────────────────────────
-type Screen =
-  | "landing"       // default: pick role, set up free interview
-  | "interview"     // live mock interview session
-  | "feedback"      // post-interview results (teased for guests)
-  | "gate";         // sign-up wall after free interview
-
+type Screen = "landing" | "interview" | "feedback";
+type CallStatus = "idle" | "ai-speaking" | "listening" | "processing";
 type UserStatus = "guest" | "signed-in";
 
-interface Message {
+interface Turn {
   role: "ai" | "user";
   text: string;
 }
 
-// ─── Sample AI conversation flow ─────────────────────────
-const SAMPLE_QUESTIONS = [
+// ─── Interview questions ──────────────────────────────────
+const QUESTIONS = [
   "Tell me about yourself and what draws you to this role.",
-  "Walk me through a project you're most proud of. What was your specific contribution?",
+  "Walk me through a project you're most proud of and your specific contribution.",
   "Describe a time you had to deal with a difficult stakeholder. How did you handle it?",
   "What's your approach when you disagree with your manager's decision?",
 ];
 
-// ─── Component ───────────────────────────────────────────
+const FOLLOW_UPS = [
+  "That's really helpful, thank you. Let me follow up on that —",
+  "Interesting — I'd love to dig a little deeper. Here's my next question —",
+  "Good, that gives me a clear picture. Let's keep going —",
+  "I appreciate the detail there. Moving on —",
+];
+
+// ─── Browser speech helpers ───────────────────────────────
+function speak(text: string, onEnd: () => void) {
+  if (typeof window === "undefined") return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 0.95;
+  utter.pitch = 1;
+  utter.volume = 1;
+
+  // prefer a natural-sounding voice
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find(v =>
+    /samantha|karen|daniel|moira|fiona|kate|victoria|zira|david/i.test(v.name)
+  ) || voices.find(v => v.lang.startsWith("en")) || voices[0];
+  if (preferred) utter.voice = preferred;
+
+  utter.onend = onEnd;
+  utter.onerror = onEnd;
+  window.speechSynthesis.speak(utter);
+}
+
+// ─── Main component ───────────────────────────────────────
 export default function PracticePage() {
-  const [userStatus] = useState<UserStatus>("guest"); // swap to "signed-in" when auth is wired
+  const [userStatus] = useState<UserStatus>("guest");
   const [screen, setScreen] = useState<Screen>("landing");
 
-  // Setup fields
+  // Setup
   const [targetRole, setTargetRole] = useState("");
-  const [interviewType, setInterviewType] = useState("general");
+  const [interviewType, setInterviewType] = useState("General");
   const [experienceLevel, setExperienceLevel] = useState("mid");
-  const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
 
-  // Interview state
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Call state
+  const [callStatus, setCallStatus] = useState<CallStatus>("idle");
   const [questionIndex, setQuestionIndex] = useState(0);
-  const [userInput, setUserInput] = useState("");
-  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [transcript, setTranscript] = useState<Turn[]>([]);
+  const [liveCaption, setLiveCaption] = useState(""); // what user is currently saying
+  const [aiCaption, setAiCaption] = useState("");     // what AI just said
+  const [callDuration, setCallDuration] = useState(0);
   const [interviewDone, setInterviewDone] = useState(false);
+  const [micError, setMicError] = useState("");
 
-  // ── Start interview ──
-  function startInterview() {
-    if (userStatus === "guest" && hasUsedFreeTrial) {
-      setScreen("gate");
+  // Refs
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasUsedFreeTrial = useRef(false);
+
+  // ── Timer ──
+  useEffect(() => {
+    if (screen === "interview" && !interviewDone) {
+      timerRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [screen, interviewDone]);
+
+  const formatTime = (s: number) =>
+    `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+  // ── AI speaks a turn, then starts listening ──
+  const aiSpeak = useCallback((text: string, done = false) => {
+    setCallStatus("ai-speaking");
+    setAiCaption(text);
+    setTranscript(prev => [...prev, { role: "ai", text }]);
+
+    speak(text, () => {
+      if (done) {
+        setInterviewDone(true);
+        setCallStatus("idle");
+        setAiCaption("");
+        return;
+      }
+      // Start listening after AI finishes
+      setCallStatus("listening");
+      setAiCaption("");
+      startListening();
+    });
+  }, []);
+
+  // ── Speech recognition ──
+  const startListening = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const SR = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setMicError("Speech recognition isn't supported in this browser. Try Chrome.");
       return;
     }
-    const opening: Message = {
-      role: "ai",
-      text: `Hi! I'm your Nervo interviewer. Today we're simulating a ${interviewType} interview for a ${targetRole || "Software Engineer"} role at the ${experienceLevel} level. Take your time and answer naturally — I'll follow up as we go.\n\n${SAMPLE_QUESTIONS[0]}`,
+
+    const rec = new SR();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    recognitionRef.current = rec;
+
+    rec.onstart = () => {
+      setLiveCaption("");
+      setCallStatus("listening");
     };
-    setMessages([opening]);
-    setQuestionIndex(0);
-    setInterviewDone(false);
-    setScreen("interview");
-  }
 
-  // ── Send answer ──
-  function sendAnswer() {
-    if (!userInput.trim()) return;
-    const userMsg: Message = { role: "user", text: userInput };
-    setUserInput("");
-    setIsAiTyping(true);
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      let interim = "";
+      let final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
+      }
+      setLiveCaption(final || interim);
+    };
 
-    setMessages(prev => [...prev, userMsg]);
+    rec.onend = () => {
+      // grab whatever was captured
+      setLiveCaption(prev => {
+        const captured = prev.trim();
+        if (captured) {
+          handleUserAnswer(captured);
+        } else {
+          // Nothing heard — prompt again
+          setCallStatus("listening");
+          setTimeout(() => startListening(), 600);
+        }
+        return "";
+      });
+    };
+
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      if (e.error === "no-speech") {
+        // retry silently
+        setTimeout(() => startListening(), 800);
+      } else if (e.error === "not-allowed") {
+        setMicError("Microphone access was denied. Please allow mic access and reload.");
+        setCallStatus("idle");
+      }
+    };
+
+    rec.start();
+  }, []);
+
+  // ── Handle user answer ──
+  const handleUserAnswer = useCallback((answer: string) => {
+    setCallStatus("processing");
+    setTranscript(prev => [...prev, { role: "user", text: answer }]);
 
     setTimeout(() => {
       const nextIndex = questionIndex + 1;
-      let aiText = "";
-
-      if (nextIndex < SAMPLE_QUESTIONS.length) {
-        // Follow-up acknowledgement + next question
-        const followUps = [
-          "That's a solid answer. I appreciate the specificity. Let me follow up —",
-          "Interesting — I'd love to dig a little deeper on that. Next:",
-          "Good. That gives me a clear picture. Moving on —",
-        ];
-        aiText = `${followUps[Math.floor(Math.random() * followUps.length)]} ${SAMPLE_QUESTIONS[nextIndex]}`;
+      if (nextIndex < QUESTIONS.length) {
+        const followUp = FOLLOW_UPS[Math.floor(Math.random() * FOLLOW_UPS.length)];
+        const aiText = `${followUp} ${QUESTIONS[nextIndex]}`;
         setQuestionIndex(nextIndex);
+        aiSpeak(aiText);
       } else {
-        aiText =
-          "That wraps up our session. You gave some strong answers — particularly around handling disagreement. Let's look at your results.";
-        setInterviewDone(true);
+        aiSpeak(
+          "That wraps up our interview. You gave some thoughtful answers — I especially liked how you handled the stakeholder question. Give me a moment and I'll generate your full feedback report.",
+          true
+        );
       }
+    }, 600);
+  }, [questionIndex, aiSpeak]);
 
-      setMessages(prev => [...prev, { role: "ai", text: aiText }]);
-      setIsAiTyping(false);
-    }, 1400);
+  // ── Start the call ──
+  function startInterview() {
+    setTranscript([]);
+    setQuestionIndex(0);
+    setCallDuration(0);
+    setInterviewDone(false);
+    setLiveCaption("");
+    setAiCaption("");
+    setMicError("");
+    setScreen("interview");
+
+    // Small delay so screen renders first
+    setTimeout(() => {
+      const opening = `Hi! I'm your Nervo AI interviewer. We're doing a ${interviewType.toLowerCase()} interview for a ${targetRole || "Software Engineer"} role at the ${experienceLevel} level. Just speak naturally — take your time. Let's start. ${QUESTIONS[0]}`;
+      aiSpeak(opening);
+    }, 400);
   }
 
-  // ── Finish → feedback or gate ──
-  function viewFeedback() {
-    if (userStatus === "guest") {
-      setHasUsedFreeTrial(true);
-      setScreen("feedback"); // show teased results, then gate inside
+  // ── End call & go to feedback ──
+  function endCall() {
+    window.speechSynthesis.cancel();
+    if (recognitionRef.current) recognitionRef.current.abort();
+    if (timerRef.current) clearInterval(timerRef.current);
+    hasUsedFreeTrial.current = true;
+    setScreen("feedback");
+  }
+
+  // ── Mute toggle (stops listening, resumes after) ──
+  const [muted, setMuted] = useState(false);
+  function toggleMute() {
+    if (!muted) {
+      if (recognitionRef.current) recognitionRef.current.abort();
+      setMuted(true);
+      setCallStatus("idle");
     } else {
-      setScreen("feedback");
+      setMuted(false);
+      if (callStatus === "idle" && !interviewDone && !aiCaption) {
+        setCallStatus("listening");
+        startListening();
+      }
     }
   }
 
@@ -107,24 +233,21 @@ export default function PracticePage() {
       <style>{`
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         html { scroll-behavior: smooth; }
-
         body {
-          background: #05050f;
-          color: #fff;
+          background: #05050f; color: #fff;
           font-family: var(--font-dm-sans), sans-serif;
-          -webkit-font-smoothing: antialiased;
-          min-height: 100vh;
+          -webkit-font-smoothing: antialiased; min-height: 100vh;
         }
 
         /* ── Glows ── */
         .glow-tl {
-          position: fixed; top: -180px; left: -180px;
-          width: 560px; height: 560px; pointer-events: none; z-index: 0;
-          background: radial-gradient(circle, rgba(124,58,237,0.14) 0%, transparent 70%);
+          position: fixed; top: -200px; left: -200px;
+          width: 600px; height: 600px; pointer-events: none; z-index: 0;
+          background: radial-gradient(circle, rgba(124,58,237,0.15) 0%, transparent 70%);
         }
         .glow-br {
-          position: fixed; bottom: -100px; right: -100px;
-          width: 480px; height: 480px; pointer-events: none; z-index: 0;
+          position: fixed; bottom: -120px; right: -120px;
+          width: 500px; height: 500px; pointer-events: none; z-index: 0;
           background: radial-gradient(circle, rgba(59,130,246,0.1) 0%, transparent 70%);
         }
 
@@ -133,8 +256,7 @@ export default function PracticePage() {
           position: fixed; top: 0; left: 0; right: 0; z-index: 50;
           display: flex; align-items: center; justify-content: space-between;
           padding: 18px 48px;
-          background: rgba(5,5,15,0.8);
-          backdrop-filter: blur(20px);
+          background: rgba(5,5,15,0.85); backdrop-filter: blur(20px);
           border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .nav-logo {
@@ -145,10 +267,7 @@ export default function PracticePage() {
           background-clip: text; text-decoration: none;
         }
         .nav-right { display: flex; gap: 10px; align-items: center; }
-        .nav-link {
-          font-size: 13px; font-weight: 300; color: #8b8aa6;
-          text-decoration: none; transition: color 0.2s;
-        }
+        .nav-link { font-size: 13px; font-weight: 300; color: #8b8aa6; text-decoration: none; transition: color 0.2s; }
         .nav-link:hover { color: #fff; }
         .nav-btn {
           font-size: 13px; font-weight: 500; color: #c4b5fd;
@@ -163,75 +282,85 @@ export default function PracticePage() {
         /* ── Guest banner ── */
         .guest-banner {
           position: fixed; top: 65px; left: 0; right: 0; z-index: 40;
-          background: rgba(124,58,237,0.1);
-          border-bottom: 1px solid rgba(124,58,237,0.2);
-          padding: 10px 48px;
+          background: rgba(124,58,237,0.09);
+          border-bottom: 1px solid rgba(124,58,237,0.18);
+          padding: 9px 48px;
           display: flex; align-items: center; justify-content: space-between; gap: 16px;
         }
         .gb-text { font-size: 13px; font-weight: 300; color: #c4b5fd; }
         .gb-text strong { font-weight: 600; }
-        .gb-actions { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
         .gb-sign-up {
           font-size: 12px; font-weight: 500; color: #a78bfa;
           padding: 5px 14px; border-radius: 7px;
           border: 1px solid rgba(124,58,237,0.4);
           background: transparent; cursor: pointer;
           font-family: var(--font-dm-sans), sans-serif;
-          text-decoration: none;
-          transition: background 0.2s;
+          text-decoration: none; transition: background 0.2s; flex-shrink: 0;
         }
         .gb-sign-up:hover { background: rgba(124,58,237,0.15); }
 
-        /* ── Page layout ── */
-        .page-body {
-          padding-top: 110px; /* nav + banner */
-          min-height: 100vh;
-          position: relative; z-index: 1;
-        }
+        /* ── Page body ── */
+        .page-body { padding-top: 112px; min-height: 100vh; position: relative; z-index: 1; }
         .page-body.no-banner { padding-top: 80px; }
 
-        /* ════════════════════════════════════════
-           LANDING SCREEN
-        ════════════════════════════════════════ */
+        /* ════════════════════
+           LANDING
+        ════════════════════ */
         .landing-wrap {
-          max-width: 780px; margin: 0 auto; padding: 48px 24px 80px;
+          max-width: 760px; margin: 0 auto; padding: 48px 24px 80px;
+          animation: fadeUp 0.5s ease both;
         }
-
         .landing-badge {
           display: inline-flex; align-items: center; gap: 8px;
-          padding: 5px 14px; border-radius: 999px; margin-bottom: 24px;
+          padding: 5px 14px; border-radius: 999px; margin-bottom: 22px;
           background: rgba(124,58,237,0.1); border: 1px solid rgba(124,58,237,0.25);
         }
-        .badge-dot {
-          width: 6px; height: 6px; border-radius: 50%; background: #a78bfa;
-          animation: pulseDot 2s ease infinite;
-        }
+        .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #a78bfa; animation: pulseDot 2s ease infinite; }
         .landing-badge span { font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #c4b5fd; }
 
         .landing-h1 {
           font-family: var(--font-syne), sans-serif;
-          font-size: clamp(30px, 4vw, 52px); font-weight: 800;
-          line-height: 1.07; letter-spacing: -1.2px; color: #fff;
-          margin-bottom: 16px;
+          font-size: clamp(30px, 4vw, 50px); font-weight: 800;
+          line-height: 1.08; letter-spacing: -1.2px; color: #fff; margin-bottom: 14px;
         }
         .landing-h1 .grad {
           background: linear-gradient(120deg, #c084fc 10%, #818cf8 55%, #38bdf8 100%);
           -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
         }
         .landing-sub {
-          font-size: 16px; font-weight: 300; color: #8b8aa6;
-          line-height: 1.7; max-width: 540px; margin-bottom: 40px;
+          font-size: 15px; font-weight: 300; color: #8b8aa6;
+          line-height: 1.7; max-width: 520px; margin-bottom: 32px;
         }
 
-        /* free trial callout */
+        /* how it works strip */
+        .how-strip {
+          display: flex; gap: 0; margin-bottom: 36px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.07);
+          border-radius: 14px; overflow: hidden;
+        }
+        .how-item {
+          flex: 1; padding: 18px 20px; display: flex; align-items: flex-start; gap: 12px;
+          border-right: 1px solid rgba(255,255,255,0.06);
+        }
+        .how-item:last-child { border-right: none; }
+        .how-icon {
+          width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center; font-size: 16px;
+          background: rgba(124,58,237,0.12); border: 1px solid rgba(124,58,237,0.2);
+        }
+        .how-text h4 { font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 3px; }
+        .how-text p  { font-size: 11px; font-weight: 300; color: #4f4e6a; line-height: 1.4; }
+
+        /* free callout */
         .free-callout {
           display: flex; align-items: flex-start; gap: 14px;
-          padding: 18px 20px; border-radius: 12px; margin-bottom: 36px;
+          padding: 16px 20px; border-radius: 12px; margin-bottom: 28px;
           background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.18);
         }
         .free-callout-icon { font-size: 20px; flex-shrink: 0; margin-top: 1px; }
-        .free-callout-text h4 { font-size: 14px; font-weight: 500; color: #4ade80; margin-bottom: 4px; }
-        .free-callout-text p  { font-size: 13px; font-weight: 300; color: #8b8aa6; line-height: 1.55; }
+        .free-callout-text h4 { font-size: 13px; font-weight: 500; color: #4ade80; margin-bottom: 3px; }
+        .free-callout-text p  { font-size: 12px; font-weight: 300; color: #8b8aa6; line-height: 1.55; }
         .free-callout-text p a { color: #a78bfa; text-decoration: none; }
         .free-callout-text p a:hover { text-decoration: underline; }
 
@@ -243,13 +372,11 @@ export default function PracticePage() {
         }
         .setup-card h3 {
           font-family: var(--font-syne), sans-serif;
-          font-size: 16px; font-weight: 700; color: #fff;
-          margin-bottom: 24px; letter-spacing: -0.2px;
+          font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 22px; letter-spacing: -0.2px;
         }
-        .setup-fields { display: flex; flex-direction: column; gap: 18px; margin-bottom: 28px; }
+        .setup-fields { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }
         .setup-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-
-        .field { display: flex; flex-direction: column; gap: 7px; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
         label { font-size: 12px; font-weight: 500; color: #8b8aa6; letter-spacing: 0.04em; }
 
         input[type="text"], select {
@@ -258,41 +385,25 @@ export default function PracticePage() {
           border: 1px solid rgba(255,255,255,0.1);
           color: #fff; font-family: var(--font-dm-sans), sans-serif;
           font-size: 14px; font-weight: 300; outline: none;
-          transition: border-color 0.2s, background 0.2s;
-          -webkit-appearance: none;
+          transition: border-color 0.2s, background 0.2s; -webkit-appearance: none;
         }
         input::placeholder { color: #4f4e6a; }
         select { color: #8b8aa6; cursor: pointer; }
         select option { background: #0e0e1f; color: #fff; }
-        input:focus, select:focus {
-          border-color: rgba(124,58,237,0.55);
-          background: rgba(124,58,237,0.05);
-        }
+        input:focus, select:focus { border-color: rgba(124,58,237,0.55); background: rgba(124,58,237,0.05); }
 
-        /* interview type selector */
         .type-pills { display: flex; gap: 8px; flex-wrap: wrap; }
         .type-pill {
-          padding: 8px 16px; border-radius: 999px; cursor: pointer;
+          padding: 7px 16px; border-radius: 999px; cursor: pointer;
           font-size: 13px; font-weight: 400;
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.08);
-          color: #8b8aa6; transition: all 0.2s;
-          font-family: var(--font-dm-sans), sans-serif;
+          background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+          color: #8b8aa6; transition: all 0.2s; font-family: var(--font-dm-sans), sans-serif;
         }
-        .type-pill.active {
-          background: rgba(124,58,237,0.15);
-          border-color: rgba(124,58,237,0.45);
-          color: #c4b5fd;
-        }
-        .type-pill:hover:not(.active) {
-          background: rgba(255,255,255,0.07);
-          border-color: rgba(255,255,255,0.15);
-          color: #fff;
-        }
+        .type-pill.active { background: rgba(124,58,237,0.15); border-color: rgba(124,58,237,0.45); color: #c4b5fd; }
+        .type-pill:hover:not(.active) { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.15); color: #fff; }
 
         .btn-start {
-          width: 100%; padding: 15px;
-          border-radius: 12px; border: none; cursor: pointer;
+          width: 100%; padding: 15px; border-radius: 12px; border: none; cursor: pointer;
           background: linear-gradient(135deg, #7c3aed, #4f46e5);
           color: #fff; font-family: var(--font-dm-sans), sans-serif;
           font-size: 15px; font-weight: 500;
@@ -300,303 +411,329 @@ export default function PracticePage() {
           transition: transform 0.2s, box-shadow 0.2s;
           display: flex; align-items: center; justify-content: center; gap: 10px;
         }
-        .btn-start:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 0 48px rgba(124,58,237,0.55);
-        }
+        .btn-start:hover { transform: translateY(-2px); box-shadow: 0 0 48px rgba(124,58,237,0.55); }
 
-        /* what to expect strip */
-        .expect-strip {
-          display: flex; gap: 20px; margin-top: 28px; flex-wrap: wrap;
-        }
-        .expect-item {
-          display: flex; align-items: center; gap: 8px;
+        .mic-note {
+          text-align: center; margin-top: 16px;
           font-size: 12px; font-weight: 300; color: #4f4e6a;
         }
-        .expect-dot { width: 5px; height: 5px; border-radius: 50%; background: #7c3aed; }
+        .mic-note span { color: #6d5acf; }
 
-        /* ════════════════════════════════════════
-           INTERVIEW SCREEN
-        ════════════════════════════════════════ */
-        .interview-wrap {
-          max-width: 720px; margin: 0 auto; padding: 32px 24px 120px;
-          display: flex; flex-direction: column; gap: 0;
-        }
-
-        .interview-header {
-          display: flex; align-items: center; justify-content: space-between;
-          margin-bottom: 28px; padding-bottom: 20px;
-          border-bottom: 1px solid rgba(255,255,255,0.06);
-        }
-        .interview-title {
-          display: flex; flex-direction: column; gap: 3px;
-        }
-        .interview-title h2 {
-          font-family: var(--font-syne), sans-serif;
-          font-size: 17px; font-weight: 700; color: #fff; letter-spacing: -0.3px;
-        }
-        .interview-title span { font-size: 12px; color: #4f4e6a; }
-        .interview-badge {
-          display: flex; align-items: center; gap: 7px;
-          padding: 6px 14px; border-radius: 999px;
-          background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.2);
-          font-size: 12px; font-weight: 500; color: #4ade80;
-        }
-        .live-dot {
-          width: 6px; height: 6px; border-radius: 50%; background: #4ade80;
-          animation: pulseDot 1.5s ease infinite;
+        /* ════════════════════
+           INTERVIEW / CALL UI
+        ════════════════════ */
+        .call-screen {
+          min-height: calc(100vh - 112px);
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          padding: 40px 24px;
+          position: relative;
+          animation: fadeUp 0.4s ease both;
         }
 
-        /* progress bar */
-        .progress-bar {
-          height: 3px; background: rgba(255,255,255,0.06);
-          border-radius: 999px; margin-bottom: 28px; overflow: hidden;
-        }
-        .progress-fill {
-          height: 100%; border-radius: 999px;
-          background: linear-gradient(90deg, #7c3aed, #38bdf8);
-          transition: width 0.6s ease;
-        }
-
-        /* messages */
-        .messages { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }
-
-        .msg {
-          display: flex; gap: 12px; align-items: flex-start;
-          animation: fadeUp 0.35s ease both;
-        }
-        .msg.user { flex-direction: row-reverse; }
-
-        .msg-avatar {
-          width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 12px; font-weight: 600;
-        }
-        .avatar-ai {
-          background: linear-gradient(135deg, #7c3aed, #4f46e5);
-          color: #fff;
-        }
-        .avatar-user {
-          background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(255,255,255,0.1);
-          color: #8b8aa6;
-        }
-
-        .msg-bubble {
-          max-width: 82%; padding: 14px 16px; border-radius: 14px;
-          font-size: 14px; font-weight: 300; line-height: 1.65;
-        }
-        .bubble-ai {
-          background: rgba(124,58,237,0.1);
+        /* call card */
+        .call-card {
+          width: 100%; max-width: 480px;
+          background: rgba(12,12,28,0.85);
           border: 1px solid rgba(124,58,237,0.2);
-          color: #e2e0f5; border-top-left-radius: 4px;
-        }
-        .bubble-user {
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.09);
-          color: #c4c3dc; border-top-right-radius: 4px;
+          border-radius: 28px; padding: 40px 36px 36px;
+          backdrop-filter: blur(24px);
+          box-shadow: 0 0 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+          display: flex; flex-direction: column; align-items: center; gap: 0;
+          position: relative;
         }
 
-        /* typing indicator */
-        .typing-indicator {
-          display: flex; align-items: center; gap: 12px; padding: 10px 0;
-          animation: fadeUp 0.3s ease;
+        /* call header */
+        .call-header {
+          width: 100%; display: flex; align-items: center; justify-content: space-between;
+          margin-bottom: 32px;
         }
-        .typing-dots { display: flex; gap: 4px; align-items: center; }
-        .typing-dots span {
-          width: 6px; height: 6px; border-radius: 50%; background: #7c3aed;
-          animation: dotBounce 1.2s ease infinite;
+        .call-label {
+          font-family: var(--font-syne), sans-serif;
+          font-size: 13px; font-weight: 600; color: #a78bfa; letter-spacing: 0.06em;
         }
-        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-        .typing-label { font-size: 12px; color: #4f4e6a; }
+        .call-timer {
+          font-family: var(--font-syne), sans-serif;
+          font-size: 13px; font-weight: 600; color: #4f4e6a; letter-spacing: 0.08em;
+        }
 
-        /* input bar */
-        .input-bar {
-          position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
-          background: rgba(5,5,15,0.92);
-          backdrop-filter: blur(20px);
-          border-top: 1px solid rgba(255,255,255,0.07);
-          padding: 16px 24px;
+        /* progress dots */
+        .progress-dots {
+          display: flex; gap: 7px; margin-bottom: 36px;
         }
-        .input-inner {
-          max-width: 720px; margin: 0 auto;
-          display: flex; gap: 10px; align-items: flex-end;
+        .prog-dot {
+          height: 4px; border-radius: 999px;
+          transition: all 0.5s ease;
         }
-        textarea {
-          flex: 1; padding: 12px 16px; border-radius: 12px; resize: none;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
-          color: #fff; font-family: var(--font-dm-sans), sans-serif;
-          font-size: 14px; font-weight: 300; outline: none; line-height: 1.6;
-          min-height: 48px; max-height: 140px;
-          transition: border-color 0.2s;
-        }
-        textarea::placeholder { color: #4f4e6a; }
-        textarea:focus { border-color: rgba(124,58,237,0.5); }
+        .prog-dot.done   { background: #7c3aed; width: 24px; }
+        .prog-dot.active { background: linear-gradient(90deg, #7c3aed, #38bdf8); width: 32px; }
+        .prog-dot.future { background: rgba(255,255,255,0.08); width: 14px; }
 
-        .btn-send {
-          width: 48px; height: 48px; border-radius: 12px; border: none; cursor: pointer;
-          background: linear-gradient(135deg, #7c3aed, #4f46e5);
-          color: #fff; font-size: 18px;
-          box-shadow: 0 0 20px rgba(124,58,237,0.35);
-          transition: transform 0.15s, box-shadow 0.15s;
+        /* AI avatar orb */
+        .orb-container { position: relative; margin-bottom: 28px; }
+        .orb {
+          width: 110px; height: 110px; border-radius: 50%;
+          background: radial-gradient(circle at 35% 35%, #a78bfa, #6d28d9 55%, #1e1b4b 100%);
+          position: relative;
+          transition: transform 0.3s ease;
+        }
+        .orb.speaking { animation: orbPulse 1.2s ease-in-out infinite; }
+        .orb-shine {
+          position: absolute; inset: 14px; border-radius: 50%;
+          background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.25), transparent 65%);
+        }
+        .orb-label {
+          position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%);
+          background: rgba(124,58,237,0.9); backdrop-filter: blur(8px);
+          border-radius: 999px; padding: 4px 12px;
+          font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap;
+          border: 1px solid rgba(167,139,250,0.4);
+        }
+
+        /* sound waves (show when AI speaking) */
+        .wave-bars {
+          display: flex; align-items: center; gap: 4px; height: 32px;
+          margin-bottom: 24px;
+        }
+        .wave-bar {
+          width: 4px; border-radius: 999px;
+          background: linear-gradient(180deg, #a78bfa, #4f46e5);
+          animation: waveBounce 0.8s ease-in-out infinite;
+        }
+        .wave-bar:nth-child(1) { animation-delay: 0s;    height: 10px; }
+        .wave-bar:nth-child(2) { animation-delay: 0.1s;  height: 20px; }
+        .wave-bar:nth-child(3) { animation-delay: 0.2s;  height: 28px; }
+        .wave-bar:nth-child(4) { animation-delay: 0.15s; height: 22px; }
+        .wave-bar:nth-child(5) { animation-delay: 0.05s; height: 14px; }
+        .wave-bar:nth-child(6) { animation-delay: 0.25s; height: 26px; }
+        .wave-bar:nth-child(7) { animation-delay: 0.1s;  height: 18px; }
+        .wave-bar.paused { animation: none; height: 4px !important; opacity: 0.3; }
+
+        /* status label */
+        .call-status-text {
+          font-size: 13px; font-weight: 400; color: #8b8aa6;
+          margin-bottom: 10px; min-height: 20px; text-align: center;
+        }
+
+        /* live caption (what user is saying) */
+        .caption-bubble {
+          width: 100%; min-height: 52px; padding: 12px 16px;
+          background: rgba(255,255,255,0.04); border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.07);
+          margin-bottom: 28px;
+          font-size: 14px; font-weight: 300; color: #c4b5fd;
+          line-height: 1.6; text-align: center;
+          transition: border-color 0.3s;
+        }
+        .caption-bubble.active { border-color: rgba(124,58,237,0.4); }
+        .caption-bubble.empty { color: #4f4e6a; }
+
+        /* mic ring (listening indicator) */
+        .mic-ring-wrap {
+          position: relative; display: flex; align-items: center; justify-content: center;
+          margin-bottom: 28px;
+        }
+        .mic-ring {
+          width: 64px; height: 64px; border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
-          flex-shrink: 0;
+          font-size: 24px;
+          background: rgba(124,58,237,0.12); border: 2px solid rgba(124,58,237,0.3);
+          position: relative; z-index: 1;
+          transition: background 0.3s, border-color 0.3s;
         }
-        .btn-send:hover { transform: translateY(-1px); box-shadow: 0 0 30px rgba(124,58,237,0.5); }
-        .btn-send:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-
-        .btn-finish {
-          padding: 12px 22px; border-radius: 10px; border: none; cursor: pointer;
-          background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.25);
-          color: #4ade80; font-family: var(--font-dm-sans), sans-serif;
-          font-size: 13px; font-weight: 500;
-          transition: background 0.2s;
-          white-space: nowrap; flex-shrink: 0;
+        .mic-ring.listening {
+          background: rgba(124,58,237,0.2); border-color: rgba(167,139,250,0.6);
+          animation: micPulse 1.5s ease-in-out infinite;
         }
-        .btn-finish:hover { background: rgba(74,222,128,0.18); }
+        .mic-ring.processing {
+          background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.35);
+        }
+        .mic-pulse-ring {
+          position: absolute; width: 64px; height: 64px; border-radius: 50%;
+          border: 2px solid rgba(124,58,237,0.3);
+          animation: ringOut 1.5s ease-out infinite;
+        }
+        .mic-pulse-ring:nth-child(2) { animation-delay: 0.5s; }
 
-        /* ════════════════════════════════════════
-           FEEDBACK SCREEN
-        ════════════════════════════════════════ */
+        /* call controls */
+        .call-controls {
+          width: 100%; display: flex; align-items: center; justify-content: center; gap: 16px;
+        }
+        .ctrl-btn {
+          width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer;
+          display: flex; align-items: center; justify-content: center; font-size: 20px;
+          transition: transform 0.2s, background 0.2s;
+        }
+        .ctrl-btn:hover { transform: scale(1.08); }
+        .ctrl-mute {
+          background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1);
+        }
+        .ctrl-mute.muted {
+          background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.3);
+        }
+        .ctrl-end {
+          background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3);
+          color: #f87171; width: 60px; height: 60px; font-size: 22px;
+        }
+        .ctrl-end:hover { background: rgba(239,68,68,0.25); }
+
+        /* error */
+        .mic-error {
+          margin-top: 16px; padding: 12px 16px; border-radius: 10px;
+          background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+          font-size: 13px; color: #f87171; text-align: center; line-height: 1.5;
+        }
+
+        /* finish banner */
+        .finish-banner {
+          position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+          background: rgba(5,5,15,0.95); backdrop-filter: blur(20px);
+          border-top: 1px solid rgba(74,222,128,0.2);
+          padding: 18px 24px;
+          display: flex; align-items: center; justify-content: center; gap: 16px;
+        }
+        .finish-banner p { font-size: 14px; font-weight: 300; color: #8b8aa6; }
+        .btn-feedback {
+          padding: 12px 28px; border-radius: 10px; border: none; cursor: pointer;
+          background: linear-gradient(135deg, #7c3aed, #4f46e5);
+          color: #fff; font-family: var(--font-dm-sans), sans-serif;
+          font-size: 14px; font-weight: 500;
+          box-shadow: 0 0 20px rgba(124,58,237,0.35);
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .btn-feedback:hover { transform: translateY(-1px); box-shadow: 0 0 30px rgba(124,58,237,0.5); }
+
+        /* ════════════════════
+           FEEDBACK
+        ════════════════════ */
         .feedback-wrap {
-          max-width: 720px; margin: 0 auto; padding: 32px 24px 80px;
+          max-width: 720px; margin: 0 auto; padding: 36px 24px 80px;
+          animation: fadeUp 0.5s ease both;
         }
-
-        .feedback-header { margin-bottom: 32px; }
+        .feedback-header { margin-bottom: 28px; }
         .feedback-header h2 {
           font-family: var(--font-syne), sans-serif;
-          font-size: 26px; font-weight: 700; letter-spacing: -0.5px; color: #fff;
-          margin-bottom: 6px;
+          font-size: 26px; font-weight: 700; letter-spacing: -0.5px; color: #fff; margin-bottom: 6px;
         }
-        .feedback-header p { font-size: 14px; font-weight: 300; color: #8b8aa6; }
+        .feedback-header p { font-size: 13px; font-weight: 300; color: #8b8aa6; }
 
-        /* score cards */
-        .score-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 24px; }
+        .score-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 20px; }
         .score-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.07);
+          background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
           border-radius: 14px; padding: 18px 16px; text-align: center;
         }
-        .score-label { font-size: 11px; font-weight: 500; color: #4f4e6a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+        .score-label { font-size: 10px; font-weight: 500; color: #4f4e6a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
         .score-num {
           font-family: var(--font-syne), sans-serif;
           font-size: 28px; font-weight: 800; letter-spacing: -1px;
-          background: linear-gradient(135deg, #a78bfa, #818cf8);
-          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-          background-clip: text;
+          background: linear-gradient(135deg,#a78bfa,#818cf8);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
         }
         .score-bar-mini { height: 3px; background: rgba(255,255,255,0.06); border-radius: 999px; margin-top: 8px; overflow: hidden; }
         .score-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg,#7c3aed,#818cf8); }
 
-        /* ai summary */
         .summary-card {
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.07);
-          border-radius: 16px; padding: 24px; margin-bottom: 20px;
+          background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+          border-radius: 16px; padding: 22px; margin-bottom: 16px;
         }
         .summary-card h4 {
           font-family: var(--font-syne), sans-serif;
-          font-size: 13px; font-weight: 600; color: #a78bfa;
-          text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px;
+          font-size: 12px; font-weight: 600; color: #a78bfa;
+          text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px;
         }
         .summary-card p { font-size: 14px; font-weight: 300; color: #8b8aa6; line-height: 1.7; }
 
-        /* ── Guest gate overlay ── */
-        .gate-overlay {
-          position: relative; margin-top: 8px;
+        /* transcript */
+        .transcript-card {
+          background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);
+          border-radius: 16px; padding: 20px; margin-bottom: 16px;
         }
-        .gate-blur-content {
-          filter: blur(6px); pointer-events: none; user-select: none;
-          opacity: 0.5;
+        .transcript-card h4 {
+          font-family: var(--font-syne), sans-serif;
+          font-size: 12px; font-weight: 600; color: #4f4e6a;
+          text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px;
         }
-        .gate-card {
-          position: absolute; inset: 0;
-          display: flex; align-items: center; justify-content: center;
+        .transcript-turns { display: flex; flex-direction: column; gap: 12px; max-height: 240px; overflow-y: auto; }
+        .transcript-turn { display: flex; gap: 10px; align-items: flex-start; }
+        .tt-role {
+          font-size: 10px; font-weight: 600; text-transform: uppercase;
+          letter-spacing: 0.1em; padding: 3px 8px; border-radius: 999px;
+          flex-shrink: 0; margin-top: 1px;
         }
+        .tt-ai   { background: rgba(124,58,237,0.15); color: #a78bfa; }
+        .tt-user { background: rgba(255,255,255,0.06); color: #8b8aa6; }
+        .tt-text { font-size: 13px; font-weight: 300; color: #8b8aa6; line-height: 1.6; }
+
+        /* gate */
+        .gate-overlay { position: relative; }
+        .gate-blur-content { filter: blur(6px); pointer-events: none; user-select: none; opacity: 0.45; }
+        .gate-card { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
         .gate-inner {
-          background: rgba(5,5,15,0.92);
-          border: 1px solid rgba(124,58,237,0.3);
+          background: rgba(5,5,15,0.94); border: 1px solid rgba(124,58,237,0.3);
           border-radius: 20px; padding: 36px 32px; text-align: center;
-          backdrop-filter: blur(20px);
-          max-width: 380px; width: 90%;
+          backdrop-filter: blur(20px); max-width: 360px; width: 90%;
           box-shadow: 0 0 60px rgba(0,0,0,0.5);
         }
-        .gate-icon { font-size: 32px; margin-bottom: 14px; }
+        .gate-icon { font-size: 32px; margin-bottom: 12px; }
         .gate-inner h3 {
           font-family: var(--font-syne), sans-serif;
-          font-size: 20px; font-weight: 700; color: #fff;
-          margin-bottom: 10px; letter-spacing: -0.3px;
+          font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.3px;
         }
-        .gate-inner p {
-          font-size: 13px; font-weight: 300; color: #8b8aa6;
-          line-height: 1.65; margin-bottom: 22px;
-        }
-        .gate-perks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; text-align: left; }
-        .gate-perk {
-          display: flex; align-items: center; gap: 9px;
-          font-size: 12px; font-weight: 400; color: #c4b5fd;
-        }
-        .gate-check {
-          width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
-          background: rgba(124,58,237,0.15);
-          display: flex; align-items: center; justify-content: center;
-          font-size: 9px; color: #a78bfa;
-        }
+        .gate-inner p { font-size: 13px; font-weight: 300; color: #8b8aa6; line-height: 1.65; margin-bottom: 20px; }
+        .gate-perks { display: flex; flex-direction: column; gap: 8px; margin-bottom: 22px; text-align: left; }
+        .gate-perk { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 400; color: #c4b5fd; }
+        .gate-check { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; background: rgba(124,58,237,0.15); display: flex; align-items: center; justify-content: center; font-size: 9px; color: #a78bfa; }
         .btn-gate-primary {
           width: 100%; padding: 13px; border-radius: 10px; border: none; cursor: pointer;
-          background: linear-gradient(135deg, #7c3aed, #4f46e5);
-          color: #fff; font-family: var(--font-dm-sans), sans-serif;
-          font-size: 14px; font-weight: 500; margin-bottom: 10px;
-          box-shadow: 0 0 24px rgba(124,58,237,0.35);
-          transition: transform 0.2s, box-shadow 0.2s;
-          text-decoration: none; display: block;
+          background: linear-gradient(135deg,#7c3aed,#4f46e5); color: #fff;
+          font-family: var(--font-dm-sans), sans-serif; font-size: 14px; font-weight: 500;
+          margin-bottom: 10px; box-shadow: 0 0 24px rgba(124,58,237,0.35);
+          transition: transform 0.2s, box-shadow 0.2s; text-decoration: none; display: block;
         }
         .btn-gate-primary:hover { transform: translateY(-1px); box-shadow: 0 0 36px rgba(124,58,237,0.5); }
         .btn-gate-ghost {
           width: 100%; padding: 11px; border-radius: 10px; cursor: pointer;
-          background: transparent;
-          border: 1px solid rgba(255,255,255,0.1);
+          background: transparent; border: 1px solid rgba(255,255,255,0.1);
           color: #8b8aa6; font-family: var(--font-dm-sans), sans-serif;
-          font-size: 13px; font-weight: 300;
-          transition: background 0.2s, color 0.2s;
+          font-size: 13px; font-weight: 300; transition: background 0.2s, color 0.2s;
           text-decoration: none; display: block; text-align: center;
         }
         .btn-gate-ghost:hover { background: rgba(255,255,255,0.05); color: #fff; }
 
-        /* blurred locked sections */
-        .locked-section { position: relative; }
-        .locked-section .blur-layer {
-          filter: blur(5px); pointer-events: none; user-select: none; opacity: 0.45;
+        /* ── Keyframes ── */
+        @keyframes fadeUp    { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes pulseDot  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.7)} }
+        @keyframes orbPulse  {
+          0%,100% { box-shadow: 0 0 30px rgba(124,58,237,.55), 0 0 60px rgba(124,58,237,.25); }
+          50%     { box-shadow: 0 0 55px rgba(124,58,237,.85), 0 0 110px rgba(124,58,237,.4); }
         }
-        .locked-pill {
-          position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-          display: inline-flex; align-items: center; gap: 7px;
-          padding: 8px 18px; border-radius: 999px;
-          background: rgba(124,58,237,0.15); border: 1px solid rgba(124,58,237,0.3);
-          font-size: 12px; font-weight: 500; color: #c4b5fd; white-space: nowrap;
+        @keyframes waveBounce {
+          0%,100% { transform: scaleY(0.4); }
+          50%     { transform: scaleY(1);   }
         }
-
-        /* ════════════════════════════════════════
-           ANIMATIONS
-        ════════════════════════════════════════ */
-        @keyframes fadeUp   { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes pulseDot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.7)} }
-        @keyframes dotBounce{ 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-5px)} }
+        @keyframes micPulse  {
+          0%,100% { box-shadow: 0 0 0 0 rgba(124,58,237,0.4); }
+          50%     { box-shadow: 0 0 0 12px rgba(124,58,237,0); }
+        }
+        @keyframes ringOut   {
+          0%   { transform: scale(1);   opacity: 0.6; }
+          100% { transform: scale(2.2); opacity: 0;   }
+        }
 
         /* ── Responsive ── */
         @media (max-width: 700px) {
           nav { padding: 16px 20px; }
-          .guest-banner { padding: 10px 20px; flex-wrap: wrap; }
-          .score-grid { grid-template-columns: 1fr 1fr; }
+          .guest-banner { padding: 9px 20px; flex-wrap: wrap; }
+          .how-strip { flex-direction: column; }
+          .how-item { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.06); }
+          .how-item:last-child { border-bottom: none; }
           .setup-row { grid-template-columns: 1fr; }
-          .landing-wrap, .interview-wrap, .feedback-wrap { padding-left: 16px; padding-right: 16px; }
-          .input-bar { padding: 12px 16px; }
+          .score-grid { grid-template-columns: 1fr 1fr; }
+          .call-card { padding: 28px 20px 24px; }
+          .landing-wrap, .feedback-wrap { padding-left: 16px; padding-right: 16px; }
         }
       `}</style>
 
-      {/* Glows */}
       <div className="glow-tl" aria-hidden="true" />
       <div className="glow-br" aria-hidden="true" />
 
@@ -609,56 +746,69 @@ export default function PracticePage() {
         </div>
       </nav>
 
-      {/* ── Guest banner (only on landing/interview screens) ── */}
+      {/* Guest banner */}
       {userStatus === "guest" && screen !== "feedback" && (
         <div className="guest-banner">
           <p className="gb-text">
-            🎁 <strong>1 free interview</strong> — no account needed.
-            Sign up to unlock unlimited practice, resume analysis, and full feedback reports.
+            🎁 <strong>1 free voice interview</strong> — no account needed.
+            Sign up to unlock unlimited practice and full feedback reports.
           </p>
-          <div className="gb-actions">
-            <Link href="/get-started" className="gb-sign-up">Sign up free →</Link>
-          </div>
+          <Link href="/get-started" className="gb-sign-up">Sign up free →</Link>
         </div>
       )}
 
       <div className={`page-body ${userStatus !== "guest" || screen === "feedback" ? "no-banner" : ""}`}>
 
-        {/* ════════════════════════════════════════
-            LANDING SCREEN
-        ════════════════════════════════════════ */}
+        {/* ════════════════════
+            LANDING
+        ════════════════════ */}
         {screen === "landing" && (
-          <div className="landing-wrap" style={{ animation: "fadeUp 0.5s ease both" }}>
+          <div className="landing-wrap">
             <div className="landing-badge">
               <span className="badge-dot" />
-              <span>AI Interview Practice</span>
+              <span>Voice Interview Practice</span>
             </div>
 
             <h1 className="landing-h1">
-              Practice interviews that<br />
-              <span className="grad">feel like the real thing.</span>
+              A real interview,<br />
+              <span className="grad">no typing required.</span>
             </h1>
             <p className="landing-sub">
-              Tell Nervo your target role and get a conversational AI interview — adaptive
-              questions, real follow-ups, and feedback on every answer.
+              Nervo's AI interviewer asks you questions out loud. You answer by speaking — just like
+              a real phone screen. Your voice is transcribed, the AI responds, and after the session
+              you get a scored feedback report.
             </p>
 
-            {/* Free trial callout */}
+            {/* How it works */}
+            <div className="how-strip">
+              {[
+                { icon: "🎙", title: "Speak your answers", body: "No typing. Talk naturally like a real call." },
+                { icon: "🤖", title: "AI listens & responds", body: "Nervo asks follow-ups and adapts to what you say." },
+                { icon: "📊", title: "Get your report", body: "Scores, strengths, and personalised tips after." },
+              ].map(h => (
+                <div className="how-item" key={h.title}>
+                  <div className="how-icon">{h.icon}</div>
+                  <div className="how-text"><h4>{h.title}</h4><p>{h.body}</p></div>
+                </div>
+              ))}
+            </div>
+
+            {/* Free callout */}
             <div className="free-callout">
               <div className="free-callout-icon">🎁</div>
               <div className="free-callout-text">
-                <h4>1 full interview — completely free, no sign-up required</h4>
+                <h4>1 full interview — free, no sign-up</h4>
                 <p>
-                  After your free session you'll see your scores and a preview of your feedback.{" "}
-                  <Link href="/get-started">Create a free account</Link> to unlock unlimited
+                  After your session you'll see your scores and an AI summary preview.{" "}
+                  <Link href="/get-started">Create a free account</Link> for unlimited
                   interviews, full reports, and resume analysis.
                 </p>
               </div>
             </div>
 
-            {/* Setup card */}
+            {/* Setup */}
             <div className="setup-card">
-              <h3>Set up your interview</h3>
+              <h3>Configure your interview</h3>
               <div className="setup-fields">
                 <div className="field">
                   <label>Target role</label>
@@ -669,7 +819,6 @@ export default function PracticePage() {
                     onChange={e => setTargetRole(e.target.value)}
                   />
                 </div>
-
                 <div className="setup-row">
                   <div className="field">
                     <label>Experience level</label>
@@ -683,16 +832,15 @@ export default function PracticePage() {
                   <div className="field">
                     <label>Interview focus</label>
                     <select value={interviewType} onChange={e => setInterviewType(e.target.value)}>
-                      <option value="general">General</option>
-                      <option value="technical">Technical</option>
-                      <option value="behavioral">Behavioural</option>
-                      <option value="product">Product sense</option>
+                      <option>General</option>
+                      <option>Technical</option>
+                      <option>Behavioural</option>
+                      <option>Product sense</option>
                     </select>
                   </div>
                 </div>
-
                 <div className="field">
-                  <label>Interview style</label>
+                  <label>Style</label>
                   <div className="type-pills">
                     {["Conversational", "Structured", "Pressure test"].map(t => (
                       <button
@@ -706,104 +854,128 @@ export default function PracticePage() {
               </div>
 
               <button className="btn-start" onClick={startInterview}>
-                <span>🎙</span>
-                Start free interview
+                <span>📞</span> Start voice interview
               </button>
-
-              <div className="expect-strip">
-                {["~10 min session", "4–6 adaptive questions", "Instant feedback after", "No sign-up required"].map(e => (
-                  <div className="expect-item" key={e}>
-                    <span className="expect-dot" />
-                    {e}
-                  </div>
-                ))}
-              </div>
+              <p className="mic-note">
+                Nervo will ask for <span>microphone access</span> when the call starts · Works best in Chrome
+              </p>
             </div>
           </div>
         )}
 
-        {/* ════════════════════════════════════════
-            INTERVIEW SCREEN
-        ════════════════════════════════════════ */}
+        {/* ════════════════════
+            CALL SCREEN
+        ════════════════════ */}
         {screen === "interview" && (
           <>
-            <div className="interview-wrap">
-              <div className="interview-header">
-                <div className="interview-title">
-                  <h2>{targetRole || "Software Engineer"} Interview</h2>
-                  <span>{experienceLevel} · {interviewType}</span>
-                </div>
-                <div className="interview-badge">
-                  <span className="live-dot" />
-                  In progress
-                </div>
-              </div>
+            <div className="call-screen">
+              <div className="call-card">
 
-              {/* progress */}
-              <div className="progress-bar">
-                <div
-                  className="progress-fill"
-                  style={{ width: `${Math.min(((questionIndex) / SAMPLE_QUESTIONS.length) * 100, 100)}%` }}
-                />
-              </div>
+                {/* Header */}
+                <div className="call-header">
+                  <span className="call-label">
+                    {targetRole || "Software Engineer"} · {interviewType}
+                  </span>
+                  <span className="call-timer">{formatTime(callDuration)}</span>
+                </div>
 
-              {/* messages */}
-              <div className="messages">
-                {messages.map((msg, i) => (
-                  <div className={`msg ${msg.role}`} key={i}>
-                    <div className={`msg-avatar ${msg.role === "ai" ? "avatar-ai" : "avatar-user"}`}>
-                      {msg.role === "ai" ? "N" : "U"}
-                    </div>
-                    <div className={`msg-bubble ${msg.role === "ai" ? "bubble-ai" : "bubble-user"}`}>
-                      {msg.text}
-                    </div>
+                {/* Progress dots */}
+                <div className="progress-dots">
+                  {QUESTIONS.map((_, i) => (
+                    <div
+                      key={i}
+                      className={`prog-dot ${i < questionIndex ? "done" : i === questionIndex ? "active" : "future"}`}
+                    />
+                  ))}
+                </div>
+
+                {/* AI orb */}
+                <div className="orb-container">
+                  <div className={`orb ${callStatus === "ai-speaking" ? "speaking" : ""}`}>
+                    <div className="orb-shine" />
                   </div>
-                ))}
+                  <div className="orb-label">
+                    {callStatus === "ai-speaking" ? "Nervo is speaking…" :
+                     callStatus === "listening"   ? "Your turn" :
+                     callStatus === "processing"  ? "Processing…" : "Nervo AI"}
+                  </div>
+                </div>
 
-                {isAiTyping && (
-                  <div className="typing-indicator">
-                    <div className="msg-avatar avatar-ai">N</div>
-                    <div className="typing-dots">
-                      <span /><span /><span />
-                    </div>
-                    <span className="typing-label">Nervo is thinking…</span>
+                {/* Sound wave bars */}
+                <div className="wave-bars">
+                  {[...Array(7)].map((_, i) => (
+                    <div
+                      key={i}
+                      className={`wave-bar ${callStatus !== "ai-speaking" ? "paused" : ""}`}
+                    />
+                  ))}
+                </div>
+
+                {/* Status */}
+                <p className="call-status-text">
+                  {callStatus === "ai-speaking" ? aiCaption.slice(0, 60) + (aiCaption.length > 60 ? "…" : "") :
+                   callStatus === "listening"   ? "Listening — speak your answer" :
+                   callStatus === "processing"  ? "Got it, thinking…" :
+                   interviewDone               ? "Interview complete" : "Connecting…"}
+                </p>
+
+                {/* Live caption — what user is saying */}
+                {callStatus === "listening" && (
+                  <div className={`caption-bubble ${liveCaption ? "active" : "empty"}`}>
+                    {liveCaption || "Start speaking…"}
                   </div>
                 )}
+
+                {/* Mic ring — listening state */}
+                {callStatus === "listening" && (
+                  <div className="mic-ring-wrap">
+                    <div className="mic-pulse-ring" />
+                    <div className="mic-pulse-ring" />
+                    <div className="mic-ring listening">🎙</div>
+                  </div>
+                )}
+
+                {callStatus === "processing" && (
+                  <div className="mic-ring-wrap">
+                    <div className="mic-ring processing">⏳</div>
+                  </div>
+                )}
+
+                {/* Controls */}
+                <div className="call-controls">
+                  <button
+                    className={`ctrl-btn ctrl-mute ${muted ? "muted" : ""}`}
+                    onClick={toggleMute}
+                    title={muted ? "Unmute" : "Mute"}
+                  >
+                    {muted ? "🔇" : "🎤"}
+                  </button>
+                  <button className="ctrl-btn ctrl-end" onClick={endCall} title="End interview">
+                    📵
+                  </button>
+                </div>
+
+                {micError && <p className="mic-error">{micError}</p>}
               </div>
             </div>
 
-            {/* fixed input bar */}
-            {!interviewDone ? (
-              <div className="input-bar">
-                <div className="input-inner">
-                  <textarea
-                    rows={1}
-                    placeholder="Type your answer… or speak (coming soon)"
-                    value={userInput}
-                    onChange={e => setUserInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAnswer(); } }}
-                    disabled={isAiTyping}
-                  />
-                  <button className="btn-send" onClick={sendAnswer} disabled={!userInput.trim() || isAiTyping}>↑</button>
-                </div>
-              </div>
-            ) : (
-              <div className="input-bar">
-                <div className="input-inner" style={{ justifyContent: "center" }}>
-                  <button className="btn-finish" onClick={viewFeedback}>
-                    View my feedback report →
-                  </button>
-                </div>
+            {/* Finish banner */}
+            {interviewDone && (
+              <div className="finish-banner">
+                <p>Interview complete — your report is ready.</p>
+                <button className="btn-feedback" onClick={endCall}>
+                  View feedback report →
+                </button>
               </div>
             )}
           </>
         )}
 
-        {/* ════════════════════════════════════════
-            FEEDBACK SCREEN
-        ════════════════════════════════════════ */}
+        {/* ════════════════════
+            FEEDBACK
+        ════════════════════ */}
         {screen === "feedback" && (
-          <div className="feedback-wrap" style={{ animation: "fadeUp 0.5s ease both" }}>
+          <div className="feedback-wrap">
             <div className="feedback-header">
               <h2>Your interview results</h2>
               <p>{targetRole || "Software Engineer"} · {experienceLevel} · {interviewType}</p>
@@ -812,9 +984,9 @@ export default function PracticePage() {
             {/* Scores — always visible */}
             <div className="score-grid">
               {[
-                { label: "Technical", val: 78 },
-                { label: "Communication", val: 85 },
-                { label: "Confidence", val: 72 },
+                { label: "Technical",       val: 78 },
+                { label: "Communication",   val: 85 },
+                { label: "Confidence",      val: 72 },
                 { label: "Problem solving", val: 80 },
               ].map(s => (
                 <div className="score-card" key={s.label}>
@@ -832,51 +1004,61 @@ export default function PracticePage() {
               <h4>AI Summary</h4>
               <p>
                 You came across as thoughtful and self-aware. Your answers showed genuine reflection,
-                especially when discussing past challenges. Communication was clear and structured.
-                The main area to focus on is leading with impact first — starting answers with the
-                outcome before the context will make your responses stronger.
+                especially when discussing past challenges. Communication was clear and easy to follow.
+                The main area to work on: lead with the outcome first — state the result before the
+                context to make your answers land harder.
               </p>
             </div>
 
-            {/* Strengths, weaknesses, suggestions — gated for guests */}
+            {/* Transcript — always visible */}
+            {transcript.length > 0 && (
+              <div className="transcript-card">
+                <h4>Call transcript</h4>
+                <div className="transcript-turns">
+                  {transcript.map((t, i) => (
+                    <div className="transcript-turn" key={i}>
+                      <span className={`tt-role ${t.role === "ai" ? "tt-ai" : "tt-user"}`}>
+                        {t.role === "ai" ? "Nervo" : "You"}
+                      </span>
+                      <span className="tt-text">{t.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Strengths / improvements / suggestions — gated for guests */}
             {userStatus === "guest" ? (
               <div className="gate-overlay">
                 <div className="gate-blur-content">
-                  {/* Fake locked content underneath blur */}
-                  <div className="summary-card" style={{ marginBottom: 16 }}>
+                  <div className="summary-card" style={{ marginBottom: 14 }}>
                     <h4>Strengths</h4>
-                    <p>Strong ownership language. Clear narrative structure. Demonstrated empathy in team scenarios. Responded well under follow-up pressure. Good use of the STAR format throughout.</p>
+                    <p>Strong ownership language. Clear narrative structure. Good use of specific examples. Demonstrated empathy. Handled follow-up questions confidently.</p>
                   </div>
-                  <div className="summary-card" style={{ marginBottom: 16 }}>
+                  <div className="summary-card" style={{ marginBottom: 14 }}>
                     <h4>Areas to improve</h4>
-                    <p>Lead with the outcome first. Quantify impact where possible. Avoid filler phrases like "I think" and "kind of". Practice concise closing statements for each answer.</p>
+                    <p>Lead with the outcome first. Quantify impact where possible. Reduce filler phrases. Practice concise closing statements for each answer.</p>
                   </div>
                   <div className="summary-card">
-                    <h4>Suggested follow-up questions to practise</h4>
-                    <p>Tell me about a time your plan completely fell apart. How did you prioritise when everything felt urgent? Describe your communication style to a new team.</p>
+                    <h4>Suggested questions to practice next</h4>
+                    <p>Tell me about a time your plan completely fell apart. How do you prioritise when everything feels urgent? How do you describe your working style to a new team?</p>
                   </div>
                 </div>
-
-                {/* Gate card */}
                 <div className="gate-card">
                   <div className="gate-inner">
                     <div className="gate-icon">🔓</div>
                     <h3>Unlock your full report</h3>
-                    <p>
-                      Create a free account to see your strengths, areas to improve,
-                      suggested follow-up questions, and unlimited future interviews.
-                    </p>
+                    <p>Create a free account to access strengths, improvement areas, follow-up questions, and unlimited voice interviews.</p>
                     <div className="gate-perks">
                       {[
-                        "Full strengths & weakness breakdown",
-                        "Personalised follow-up questions",
-                        "Unlimited practice interviews",
-                        "AI resume analyzer & ATS scoring",
-                        "Track progress across sessions",
+                        "Full strengths & weaknesses breakdown",
+                        "Personalised follow-up question bank",
+                        "Unlimited voice interview sessions",
+                        "AI resume analyser & ATS scoring",
+                        "Progress tracking across sessions",
                       ].map(p => (
                         <div className="gate-perk" key={p}>
-                          <span className="gate-check">✓</span>
-                          {p}
+                          <span className="gate-check">✓</span>{p}
                         </div>
                       ))}
                     </div>
@@ -890,22 +1072,25 @@ export default function PracticePage() {
                 </div>
               </div>
             ) : (
-              /* Signed-in users see everything */
               <>
-                <div className="summary-card" style={{ marginBottom: 16 }}>
+                <div className="summary-card" style={{ marginBottom: 14 }}>
                   <h4>Strengths</h4>
-                  <p>Strong ownership language. Clear narrative structure. Demonstrated empathy in team scenarios. Responded well under follow-up pressure.</p>
+                  <p>Strong ownership language. Clear narrative structure. Demonstrated empathy in team scenarios. Handled follow-up pressure well.</p>
                 </div>
-                <div className="summary-card" style={{ marginBottom: 16 }}>
+                <div className="summary-card" style={{ marginBottom: 14 }}>
                   <h4>Areas to improve</h4>
                   <p>Lead with the outcome first. Quantify impact where possible. Avoid filler phrases. Practice concise closing statements.</p>
                 </div>
                 <div className="summary-card">
-                  <h4>Suggested questions to practise next</h4>
-                  <p>Tell me about a time your plan completely fell apart. How did you prioritise when everything felt urgent? Describe your communication style to a new team.</p>
+                  <h4>Suggested questions to practice next</h4>
+                  <p>Tell me about a time your plan fell apart. How do you prioritise when everything is urgent? Describe your communication style to a new team.</p>
                 </div>
-                <div style={{ marginTop: 28, display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  <button className="btn-start" style={{ width: "auto", padding: "13px 28px" }} onClick={() => { setScreen("landing"); setMessages([]); }}>
+                <div style={{ marginTop: 24, display: "flex", gap: 12 }}>
+                  <button
+                    className="btn-start"
+                    style={{ width: "auto", padding: "13px 28px" }}
+                    onClick={() => { setScreen("landing"); setTranscript([]); setCallDuration(0); }}
+                  >
                     Practice again →
                   </button>
                 </div>
@@ -913,7 +1098,6 @@ export default function PracticePage() {
             )}
           </div>
         )}
-
       </div>
     </>
   );
