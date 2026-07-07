@@ -229,175 +229,177 @@ export default function DashboardPage() {
       `}</style>
 
       {/* ── Welcome banner ── */}
-      <div className="db-welcome anim-1">
-        <div>
-          <h2>
-            {loading ? "Loading…" : `${greeting}, ${firstName} 👋`}
-          </h2>
-          <p>
-            {stats.totalSessions === 0
-              ? "Start your first AI interview to begin tracking your progress."
-              : `You've completed ${stats.totalSessions} interview${stats.totalSessions !== 1 ? "s" : ""}. Keep the streak going.`
-            }
-          </p>
-        </div>
-        <Link href="/dashboard/practice" className="db-btn-primary">
-          🎙 New interview
-        </Link>
-      </div>
-
-      {/* ── Stats ── */}
-      <div className="db-stat-grid anim-2">
-        <StatCard
-          icon="🎙" num={loading ? "—" : stats.totalSessions}
-          label="Interviews done"
-          delta={stats.totalSessions > 0 ? "total" : undefined}
-          deltaType="neu" accent="purple"
-        />
-        <StatCard
-          icon="📈" num={loading ? "—" : stats.avgScore || "—"}
-          label="Avg. overall score"
-          delta={stats.avgScore > 0 ? "out of 100" : undefined}
-          deltaType="neu" accent="blue"
-        />
-        <StatCard
-          icon="⏱" num={loading ? "—" : stats.totalMinutes > 0 ? `${stats.totalMinutes}m` : "—"}
-          label="Total practice time"
-          accent="green"
-        />
-        <StatCard
-          icon="🔥" num={loading ? "—" : stats.streak || 0}
-          label="Day streak"
-          delta={stats.streak > 0 ? "Keep it up!" : undefined}
-          deltaType="up" accent="pink"
-        />
-      </div>
-
-      {/* ── Two column ── */}
-      <div className="db-cols anim-3">
-
-        {/* Recent sessions */}
-        <div className="db-card">
-          <div className="db-card-hd">
-            <h3>Recent sessions</h3>
-            <Link href="/dashboard/feedback">View all →</Link>
+      <div>
+        <div className="db-welcome anim-1">
+          <div>
+            <h2>
+              {loading ? "Loading…" : `${greeting}, ${firstName} 👋`}
+            </h2>
+            <p>
+              {stats.totalSessions === 0
+                ? "Start your first AI interview to begin tracking your progress."
+                : `You've completed ${stats.totalSessions} interview${stats.totalSessions !== 1 ? "s" : ""}. Keep the streak going.`
+              }
+            </p>
           </div>
-
-          {loading ? (
-            // Skeleton rows
-            <div style={{ padding: "12px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-              {[1,2,3].map(i => (
-                <div key={i} style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <div className="db-skeleton" style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0 }} />
-                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div className="db-skeleton" style={{ height: 13, width: "60%" }} />
-                    <div className="db-skeleton" style={{ height: 10, width: "40%" }} />
-                  </div>
-                  <div className="db-skeleton" style={{ width: 32, height: 20 }} />
-                </div>
-              ))}
-            </div>
-          ) : sessions.length === 0 ? (
-            <div style={{ padding: "16px 20px" }}>
-              <EmptySessions />
-            </div>
-          ) : (
-            sessions.map(s => {
-              const score = avg(s.scores);
-              return (
-                <Link href="/dashboard/feedback" className="db-session-row" key={s.id}>
-                  <div className="db-session-icon">🎙</div>
-                  <div className="db-session-info">
-                    <div className="db-session-role">{s.role}</div>
-                    <div className="db-session-meta">{s.interviewType} · {s.date} · {s.duration}</div>
-                  </div>
-                  <div className="db-session-score" style={{ color: scoreColor(score) }}>{score}</div>
-                  <span className="db-session-arrow">→</span>
-                </Link>
-              );
-            })
-          )}
+          <Link href="/dashboard/practice" className="db-btn-primary">
+            🎙 New interview
+          </Link>
         </div>
 
-        {/* Right column */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* ── Stats ── */}
+        <div className="db-stat-grid anim-2">
+          <StatCard
+            icon="🎙" num={loading ? "—" : stats.totalSessions}
+            label="Interviews done"
+            delta={stats.totalSessions > 0 ? "total" : undefined}
+            deltaType="neu" accent="purple"
+          />
+          <StatCard
+            icon="📈" num={loading ? "—" : stats.avgScore || "—"}
+            label="Avg. overall score"
+            delta={stats.avgScore > 0 ? "out of 100" : undefined}
+            deltaType="neu" accent="blue"
+          />
+          <StatCard
+            icon="⏱" num={loading ? "—" : stats.totalMinutes > 0 ? `${stats.totalMinutes}m` : "—"}
+            label="Total practice time"
+            accent="green"
+          />
+          <StatCard
+            icon="🔥" num={loading ? "—" : stats.streak || 0}
+            label="Day streak"
+            delta={stats.streak > 0 ? "Keep it up!" : undefined}
+            deltaType="up" accent="pink"
+          />
+        </div>
 
-          {/* Score averages */}
+        {/* ── Two column ── */}
+        <div className="db-cols anim-3">
+
+          {/* Recent sessions */}
           <div className="db-card">
-            <div className="db-card-hd"><h3>Average scores</h3></div>
+            <div className="db-card-hd">
+              <h3>Recent sessions</h3>
+              <Link href="/dashboard/feedback">View all →</Link>
+            </div>
+
             {loading ? (
-              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
-                {[1,2,3,4].map(i => (
-                  <div key={i} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    <div className="db-skeleton" style={{ height: 11, width: "50%" }} />
-                    <div className="db-skeleton" style={{ height: 5, width: "100%", borderRadius: 999 }} />
+              // Skeleton rows
+              <div style={{ padding: "12px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+                {[1,2,3].map(i => (
+                  <div key={i} style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                    <div className="db-skeleton" style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0 }} />
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div className="db-skeleton" style={{ height: 13, width: "60%" }} />
+                      <div className="db-skeleton" style={{ height: 10, width: "40%" }} />
+                    </div>
+                    <div className="db-skeleton" style={{ width: 32, height: 20 }} />
                   </div>
                 ))}
               </div>
             ) : sessions.length === 0 ? (
               <div style={{ padding: "16px 20px" }}>
-                <p style={{ fontSize: 12, color: "#4f4e6a", textAlign: "center", padding: "12px 0" }}>
-                  Complete an interview to see your scores.
-                </p>
+                <EmptySessions />
               </div>
             ) : (
-              <div className="db-score-bars">
-                {(() => {
-                  const n = sessions.length;
-                  const t = Math.round(sessions.reduce((s, x) => s + x.scores.tech, 0) / n);
-                  const c = Math.round(sessions.reduce((s, x) => s + x.scores.comm, 0) / n);
-                  const f = Math.round(sessions.reduce((s, x) => s + x.scores.conf, 0) / n);
-                  const p = Math.round(sessions.reduce((s, x) => s + x.scores.prob, 0) / n);
-                  return [
-                    { name: "Technical",       val: t, color: "#818cf8" },
-                    { name: "Communication",   val: c, color: "#38bdf8" },
-                    { name: "Confidence",      val: f, color: "#a78bfa" },
-                    { name: "Problem solving", val: p, color: "#c084fc" },
-                  ].map(b => (
-                    <div className="db-bar-item" key={b.name}>
-                      <div className="db-bar-top">
-                        <span className="db-bar-name">{b.name}</span>
-                        <span className="db-bar-val">{b.val}%</span>
-                      </div>
-                      <div className="db-bar-track">
-                        <div className="db-bar-fill" style={{ width: `${b.val}%`, background: b.color }} />
-                      </div>
+              sessions.map(s => {
+                const score = avg(s.scores);
+                return (
+                  <Link href="/dashboard/feedback" className="db-session-row" key={s.id}>
+                    <div className="db-session-icon">🎙</div>
+                    <div className="db-session-info">
+                      <div className="db-session-role">{s.role}</div>
+                      <div className="db-session-meta">{s.interviewType} · {s.date} · {s.duration}</div>
                     </div>
-                  ));
-                })()}
-              </div>
+                    <div className="db-session-score" style={{ color: scoreColor(score) }}>{score}</div>
+                    <span className="db-session-arrow">→</span>
+                  </Link>
+                );
+              })
             )}
-
-            {/* Weekly streak */}
-            <div className="db-streak-wrap">
-              <div className="db-streak-label">This week</div>
-              <div className="db-streak-days">
-                {["M","T","W","T","F","S","S"].map((d, i) => {
-                  const cls = i < stats.streak
-                    ? "sd-done"
-                    : i === stats.streak
-                    ? "sd-today"
-                    : "sd-future";
-                  return <div key={i} className={`db-streak-day ${cls}`}>{d}</div>;
-                })}
-              </div>
-            </div>
           </div>
 
-          {/* Focus tips */}
-          <div className="db-card">
-            <div className="db-card-hd"><h3>Focus for next session</h3></div>
-            <div className="db-tips">
-              {[
-                { icon: "🎯", title: "Lead with the outcome", body: "Start every answer with the result, then explain how you got there." },
-                { icon: "📏", title: "Quantify your impact",  body: "Add numbers wherever you can — percentages, time saved, team size." },
-                { icon: "🤝", title: "Show collaboration",    body: "Mention how you brought others in, not just what you did alone." },
-              ].map(t => (
-                <div className="db-tip" key={t.title}>
-                  <span className="db-tip-icon">{t.icon}</span>
-                  <div><h4>{t.title}</h4><p>{t.body}</p></div>
+          {/* Right column */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+            {/* Score averages */}
+            <div className="db-card">
+              <div className="db-card-hd"><h3>Average scores</h3></div>
+              {loading ? (
+                <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+                  {[1,2,3,4].map(i => (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <div className="db-skeleton" style={{ height: 11, width: "50%" }} />
+                      <div className="db-skeleton" style={{ height: 5, width: "100%", borderRadius: 999 }} />
+                    </div>
+                  ))}
                 </div>
-              ))}
+              ) : sessions.length === 0 ? (
+                <div style={{ padding: "16px 20px" }}>
+                  <p style={{ fontSize: 12, color: "#4f4e6a", textAlign: "center", padding: "12px 0" }}>
+                    Complete an interview to see your scores.
+                  </p>
+                </div>
+              ) : (
+                <div className="db-score-bars">
+                  {(() => {
+                    const n = sessions.length;
+                    const t = Math.round(sessions.reduce((s, x) => s + x.scores.tech, 0) / n);
+                    const c = Math.round(sessions.reduce((s, x) => s + x.scores.comm, 0) / n);
+                    const f = Math.round(sessions.reduce((s, x) => s + x.scores.conf, 0) / n);
+                    const p = Math.round(sessions.reduce((s, x) => s + x.scores.prob, 0) / n);
+                    return [
+                      { name: "Technical",       val: t, color: "#818cf8" },
+                      { name: "Communication",   val: c, color: "#38bdf8" },
+                      { name: "Confidence",      val: f, color: "#a78bfa" },
+                      { name: "Problem solving", val: p, color: "#c084fc" },
+                    ].map(b => (
+                      <div className="db-bar-item" key={b.name}>
+                        <div className="db-bar-top">
+                          <span className="db-bar-name">{b.name}</span>
+                          <span className="db-bar-val">{b.val}%</span>
+                        </div>
+                        <div className="db-bar-track">
+                          <div className="db-bar-fill" style={{ width: `${b.val}%`, background: b.color }} />
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+
+              {/* Weekly streak */}
+              <div className="db-streak-wrap">
+                <div className="db-streak-label">This week</div>
+                <div className="db-streak-days">
+                  {["M","T","W","T","F","S","S"].map((d, i) => {
+                    const cls = i < stats.streak
+                      ? "sd-done"
+                      : i === stats.streak
+                      ? "sd-today"
+                      : "sd-future";
+                    return <div key={i} className={`db-streak-day ${cls}`}>{d}</div>;
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Focus tips */}
+            <div className="db-card">
+              <div className="db-card-hd"><h3>Focus for next session</h3></div>
+              <div className="db-tips">
+                {[
+                  { icon: "🎯", title: "Lead with the outcome", body: "Start every answer with the result, then explain how you got there." },
+                  { icon: "📏", title: "Quantify your impact",  body: "Add numbers wherever you can — percentages, time saved, team size." },
+                  { icon: "🤝", title: "Show collaboration",    body: "Mention how you brought others in, not just what you did alone." },
+                ].map(t => (
+                  <div className="db-tip" key={t.title}>
+                    <span className="db-tip-icon">{t.icon}</span>
+                    <div><h4>{t.title}</h4><p>{t.body}</p></div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
