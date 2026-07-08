@@ -5,10 +5,10 @@ import { useState } from "react";
 import { CompaniesStyles, StatCard, CampaignStatus, EmptyState } from "@/components/companies-ui";
 
 const CAMPAIGNS = [
-  { id: 1, title: "Senior Product Designer",  dept: "Design",      status: "Active", candidates: 14, shortlist: 3, created: "Jun 22", daysLeft: 4,  link: "nervo.ai/i/spd-x1" },
-  { id: 2, title: "Backend Engineer (Node)",  dept: "Engineering",  status: "Active", candidates: 22, shortlist: 5, created: "Jun 20", daysLeft: 2,  link: "nervo.ai/i/be-x2"  },
-  { id: 3, title: "Growth Marketer",          dept: "Marketing",    status: "Paused", candidates: 7,  shortlist: 0, created: "Jun 18", daysLeft: 9,  link: "nervo.ai/i/gm-x3"  },
-  { id: 4, title: "Product Manager",          dept: "Product",      status: "Closed", candidates: 31, shortlist: 4, created: "Jun 1",  daysLeft: 0,  link: "nervo.ai/i/pm-x4"  },
+  { id: 1, title: "Senior Product Designer",  dept: "Design",       status: "Active", candidates: 14, shortlist: 3, created: "Jun 22", applicantCap: 20, applicantCount: 14, link: "nervo.ai/apply/spd-x1" },
+  { id: 2, title: "Backend Engineer (Node)",  dept: "Engineering",  status: "Active", candidates: 22, shortlist: 5, created: "Jun 20", applicantCap: 25, applicantCount: 22, link: "nervo.ai/apply/be-x2"  },
+  { id: 3, title: "Growth Marketer",          dept: "Marketing",    status: "Paused", candidates: 7,  shortlist: 0, created: "Jun 18", applicantCap: 15, applicantCount: 7,  link: "nervo.ai/apply/gm-x3"  },
+  { id: 4, title: "Product Manager",          dept: "Product",      status: "Closed", candidates: 31, shortlist: 4, created: "Jun 1",  applicantCap: 30, applicantCount: 31, link: "nervo.ai/apply/pm-x4"  },
 ];
 
 type Filter = "All" | "Active" | "Paused" | "Closed" | "Draft";
@@ -17,7 +17,14 @@ export default function CampaignsPage() {
   const [filter, setFilter] = useState<Filter>("All");
   const [copied, setCopied] = useState<number | null>(null);
 
-  const filtered = filter === "All" ? CAMPAIGNS : CAMPAIGNS.filter(c => c.status === filter);
+  // A campaign is effectively closed once applicantCount reaches applicantCap,
+  // regardless of the status field the company set manually.
+  const withComputedStatus = CAMPAIGNS.map(c => ({
+    ...c,
+    status: c.applicantCount >= c.applicantCap ? "Closed" : c.status,
+  }));
+
+  const filtered = filter === "All" ? withComputedStatus : withComputedStatus.filter(c => c.status === filter);
 
   function copyLink(id: number, link: string) {
     navigator.clipboard.writeText(`https://${link}`);
@@ -66,6 +73,12 @@ export default function CampaignsPage() {
         .cm-num { font-family: var(--font-syne), sans-serif; font-size: 20px; font-weight: 800; color: #fff; }
         .cm-lbl { font-size: 10px; color: #4f4e6a; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; }
 
+        /* applicant cap progress */
+        .cmp-cap-wrap { padding: 2px 2px 0; }
+        .cmp-cap-label { display: flex; justify-content: space-between; font-size: 11px; color: #4f4e6a; margin-bottom: 6px; }
+        .cmp-cap-track { height: 5px; background: rgba(255,255,255,0.07); border-radius: 999px; overflow: hidden; }
+        .cmp-cap-fill { height: 100%; border-radius: 999px; transition: width 0.8s ease; }
+
         /* actions row */
         .cmp-actions { display: flex; gap: 8px; align-items: center; }
         .cmp-link-box {
@@ -81,9 +94,10 @@ export default function CampaignsPage() {
           font-family: var(--font-dm-sans), sans-serif; transition: color 0.2s;
         }
         .cmp-copy-btn:hover { color: #c4b5fd; }
-        .cmp-days-left {
-          font-size: 11px; color: #fbbf24; background: rgba(251,191,36,0.08);
-          padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(251,191,36,0.2);
+        .cmp-copy-btn:disabled { color: #4f4e6a; cursor: not-allowed; }
+        .cmp-cap-full {
+          font-size: 11px; color: #f87171; background: rgba(248,113,113,0.08);
+          padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(248,113,113,0.2);
           white-space: nowrap;
         }
 
@@ -97,7 +111,7 @@ export default function CampaignsPage() {
       <div className="cmp-stats anim-1">
         <StatCard icon="📋" num="4"  label="Total campaigns"     colorClass="stat-purple" />
         <StatCard icon="✅" num="2"  label="Active now"          delta="↑ 1 new"  deltaType="up" colorClass="stat-green" />
-        <StatCard icon="👥" num="74" label="Total candidates"    delta="+12 this week" deltaType="up" colorClass="stat-blue" />
+        <StatCard icon="👥" num="74" label="Total applicants"    delta="+12 this week" deltaType="up" colorClass="stat-blue" />
         <StatCard icon="⭐" num="12" label="Total shortlisted"   colorClass="stat-amber" />
       </div>
 
@@ -121,54 +135,73 @@ export default function CampaignsPage() {
         />
       ) : (
         <div className="cmp-grid anim-2">
-          {filtered.map(c => (
-            <div className="cmp-card" key={c.id}>
-              <div className="cmp-card-top">
-                <div>
-                  <div className="cmp-card-title">{c.title}</div>
-                  <div className="cmp-card-dept">{c.dept} · Created {c.created}</div>
-                </div>
-                <CampaignStatus status={c.status} />
-              </div>
+          {filtered.map(c => {
+            const capReached = c.applicantCount >= c.applicantCap;
+            const capPct = Math.min((c.applicantCount / c.applicantCap) * 100, 100);
+            const capColor = capReached ? "#f87171" : capPct >= 80 ? "#fbbf24" : "#4ade80";
 
-              <div className="cmp-metrics" style={{background:"rgba(255,255,255,0.02)",borderRadius:10,border:"1px solid rgba(255,255,255,0.06)"}}>
-                <div className="cmp-metric">
-                  <div className="cm-num">{c.candidates}</div>
-                  <div className="cm-lbl">Interviewed</div>
+            return (
+              <div className="cmp-card" key={c.id}>
+                <div className="cmp-card-top">
+                  <div>
+                    <div className="cmp-card-title">{c.title}</div>
+                    <div className="cmp-card-dept">{c.dept} · Created {c.created}</div>
+                  </div>
+                  <CampaignStatus status={c.status} />
                 </div>
-                <div className="cmp-metric">
-                  <div className="cm-num" style={{color:"#4ade80"}}>{c.shortlist}</div>
-                  <div className="cm-lbl">Shortlisted</div>
-                </div>
-                <div className="cmp-metric">
-                  <div className="cm-num" style={{color:"#a78bfa"}}>{c.candidates - c.shortlist}</div>
-                  <div className="cm-lbl">Reviewed</div>
-                </div>
-              </div>
 
-              <div className="cmp-actions">
-                <div className="cmp-link-box">
-                  <span>🔗</span>
-                  <span className="cmp-link-text">{c.link}</span>
-                  <button className="cmp-copy-btn" onClick={() => copyLink(c.id, c.link)}>
-                    {copied === c.id ? "Copied ✓" : "Copy"}
-                  </button>
+                <div className="cmp-metrics" style={{background:"rgba(255,255,255,0.02)",borderRadius:10,border:"1px solid rgba(255,255,255,0.06)"}}>
+                  <div className="cmp-metric">
+                    <div className="cm-num">{c.candidates}</div>
+                    <div className="cm-lbl">Interviewed</div>
+                  </div>
+                  <div className="cmp-metric">
+                    <div className="cm-num" style={{color:"#4ade80"}}>{c.shortlist}</div>
+                    <div className="cm-lbl">Shortlisted</div>
+                  </div>
+                  <div className="cmp-metric">
+                    <div className="cm-num" style={{color:"#a78bfa"}}>{c.candidates - c.shortlist}</div>
+                    <div className="cm-lbl">Reviewed</div>
+                  </div>
                 </div>
-                {c.status === "Active" && c.daysLeft > 0 && (
-                  <span className="cmp-days-left">{c.daysLeft}d left</span>
-                )}
-              </div>
 
-              <div style={{display:"flex",gap:8}}>
-                <Link href={`/companies/campaigns/${c.id}`} className="btn btn-outline" style={{flex:1,justifyContent:"center",padding:"9px 0",fontSize:12}}>
-                  View candidates →
-                </Link>
-                <Link href={`/companies/campaigns/${c.id}/edit`} className="btn btn-ghost" style={{padding:"9px 14px",fontSize:12}}>
-                  Edit
-                </Link>
+                {/* applicant cap progress */}
+                <div className="cmp-cap-wrap">
+                  <div className="cmp-cap-label">
+                    <span>Applicant cap</span>
+                    <span style={{color:capColor}}>{c.applicantCount} / {c.applicantCap}</span>
+                  </div>
+                  <div className="cmp-cap-track">
+                    <div className="cmp-cap-fill" style={{width:`${capPct}%`, background:capColor}} />
+                  </div>
+                </div>
+
+                <div className="cmp-actions">
+                  <div className="cmp-link-box">
+                    <span>🔗</span>
+                    <span className="cmp-link-text">{c.link}</span>
+                    <button
+                      className="cmp-copy-btn"
+                      disabled={capReached}
+                      onClick={() => !capReached && copyLink(c.id, c.link)}
+                    >
+                      {capReached ? "Closed" : copied === c.id ? "Copied ✓" : "Copy"}
+                    </button>
+                  </div>
+                  {capReached && <span className="cmp-cap-full">Cap reached</span>}
+                </div>
+
+                <div style={{display:"flex",gap:8}}>
+                  <Link href={`/companies/campaigns/${c.id}`} className="btn btn-outline" style={{flex:1,justifyContent:"center",padding:"9px 0",fontSize:12}}>
+                    View candidates →
+                  </Link>
+                  <Link href={`/companies/campaigns/${c.id}/edit`} className="btn btn-ghost" style={{padding:"9px 14px",fontSize:12}}>
+                    Edit
+                  </Link>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </>

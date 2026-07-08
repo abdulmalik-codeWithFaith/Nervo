@@ -3,11 +3,13 @@
 // app/dashboard/page.tsx
 
 import Link from "next/link";
+import { useState } from "react";
+import CandidateSidebar from "@/components/dashboard/CandidateSidebar";
 import {
   useCandidateProfile,
   usePracticeSessions,
   useDashboardStats,
-} from "@/lib/hooks/seCandidateData";
+} from "@/lib/hooks/useCandidateData";
 
 // ── Shared stat card ─────────────────────────────────────
 function StatCard({
@@ -64,6 +66,7 @@ export default function DashboardPage() {
   const { profile, loading: profileLoading } = useCandidateProfile();
   const { sessions, loading: sessionsLoading } = usePracticeSessions(5);
   const stats = useDashboardStats(sessions);
+  const [collapsed, setCollapsed] = useState(false);
 
   const loading = profileLoading || sessionsLoading;
 
@@ -74,7 +77,11 @@ export default function DashboardPage() {
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   return (
-    <>
+    <div style={{ display: "flex" }}>
+      <CandidateSidebar collapsed={collapsed} onToggle={() => setCollapsed(c => !c)} />
+
+      <div style={{ flex: 1, marginLeft: collapsed ? 68 : 224, transition: "margin-left 0.22s ease" }}>
+
       <style>{`
         /* ── stat cards ── */
         .db-stat-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 26px; }
@@ -404,6 +411,7 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
-    </>
+      </div>
+    </div>
   );
 }
