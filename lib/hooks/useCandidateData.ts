@@ -1,159 +1,165 @@
 "use client";
 
-// hooks/useCompanyData.ts
-// Fetches the logged-in company's data + campaigns from Firestore.
-// Components never touch Firebase directly — they call these hooks.
+// hooks/useCandidateData.ts
+// Fetches the logged-in candidate's real data from Firestore.
+// Components just call this hook — they never touch Firebase directly.
 
 import { useState, useEffect } from "react";
 import {
   collection, query, where, orderBy,
-  getDocs, getDoc, doc, addDoc, updateDoc,
-  increment, serverTimestamp,
+  limit, getDocs, doc, getDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuthState } from "@/lib/hooks/useAuth";
 
-export interface CompanyProfile {
-  companyName: string;
-  email:       string;
-  createdAt:   any;
+export interface PracticeSession {
+  id:           string;
+  role:         string;
+  interviewType:string;
+  date:         string;        // formatted display string
+  duration:     string;
+  scores: {
+    tech: number; comm: number; conf: number; prob: number;
+  };
+  createdAt:    number;        // unix timestamp for sorting
 }
 
-export interface Campaign {
-  id:                string;
-  companyId:         string;
-  companyName:       string;
-  role:              string;
-  yearsExperience:   string;
-  skills:            string[];
-  otherRequirements: string;
-  applicantCap:      number;
-  applicantCount:    number;
-  availableSlots:    string[];
-  status:            "Active" | "Paused" | "Closed" | "Draft";
-  linkToken:         string;
-  createdAt:         number;
+export interface CandidateProfile {
+  name:         string;
+  email:        string;
+  targetRole:   string;
+  freeTrialUsed:boolean;
+  createdAt:    any;
 }
 
-export interface NewCampaignInput {
-  companyName:       string;
-  role:              string;
-  yearsExperience:   string;
-  skills:            string[];
-  otherRequirements: string;
-  applicantCap:      number;
-  availableSlots:    string[];
-  linkToken:         string;
+export interface DashboardStats {
+  totalSessions: number;
+  avgScore:      number;
+  totalMinutes:  number;
+  streak:        number;
 }
 
-// ── Fetch company profile from users/{uid} ────────────────
-export function useCompanyProfile() {
+function avg(s: PracticeSession["scores"]) {
+  return Math.round((s.tech + s.comm + s.conf + s.prob) / 4);
+}
+
+// ── Fetch candidate profile from users/{uid} ──────────────
+export function useCandidateProfile() {
   const { user } = useAuthState();
-  const [companyName, setCompanyName] = useState<string>("");
-  const [loading, setLoading] = useState(true);
+  const [profile,  setProfile]  = useState<CandidateProfile | null>(null);
+  const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
     if (!user) { setLoading(false); return; }
     getDoc(doc(db, "users", user.uid)).then(snap => {
       if (snap.exists()) {
         const d = snap.data();
-        setCompanyName(d.companyName ?? "");
+        setProfile({
+          name:          d.name          ?? user.displayName ?? "Candidate",
+          email:         d.email         ?? user.email       ?? "",
+          targetRole:    d.targetRole    ?? "",
+          freeTrialUsed: d.freeTrialUsed ?? false,
+          createdAt:     d.createdAt,
+        });
       }
       setLoading(false);
     });
   }, [user]);
 
-  return { companyName, loading };
+  return { profile, loading };
 }
 
-// ── Fetch all campaigns belonging to this company ─────────
-export function useCampaigns() {
-  const { user } = useAuthState();
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [loading, setLoading] = useState(true);
+// ── Fetch recent practice sessions from Firestore ─────────
+export function usePracticeSessions(limitTo = 10) {
+  const { user }    = useAuthState();
+  const [sessions,  setSessions]  = useState<PracticeSession[]>([]);
+  const [loading,   setLoading]   = useState(true);
 
   useEffect(() => {
     if (!user) { setLoading(false); return; }
 
     const q = query(
-      collection(db, "campaigns"),
-      where("companyId", "==", user.uid),
-      orderBy("createdAt", "desc")
+      collection(db, "practiceSessions"),
+      where("userId", "==", user.uid),
+      orderBy("createdAt", "desc"),
+      limit(limitTo)
     );
 
     getDocs(q).then(snap => {
-      const data: Campaign[] = snap.docs.map(d => {
+      const data: PracticeSession[] = snap.docs.map(d => {
         const r = d.data();
         const ts = r.createdAt?.toDate?.() ?? new Date();
         return {
-          id:                d.id,
-          companyId:         r.companyId,
-          companyName:       r.companyName ?? "",
-          role:              r.role ?? "",
-          yearsExperience:   r.yearsExperience ?? "",
-          skills:            r.skills ?? [],
-          otherRequirements: r.otherRequirements ?? "",
-          applicantCap:      r.applicantCap ?? 0,
-          applicantCount:    r.applicantCount ?? 0,
-          availableSlots:    r.availableSlots ?? [],
-          status:            r.applicantCount >= r.applicantCap ? "Closed" : (r.status ?? "Active"),
-          linkToken:         r.linkToken ?? "",
-          createdAt:         ts.getTime(),
+          id:            d.id,
+          role:          r.role          ?? "Interview",
+          interviewType: r.interviewType ?? "General",
+          duration:      r.duration      ?? "—",
+          scores: {
+            tech: r.scores?.tech ?? 0,
+            comm: r.scores?.comm ?? 0,
+            conf: r.scores?.conf ?? 0,
+            prob: r.scores?.prob ?? 0,
+          },
+          date:      formatDate(ts),
+          createdAt: ts.getTime(),
         };
       });
-      setCampaigns(data);
+      setSessions(data);
       setLoading(false);
     });
-  }, [user]);
+  }, [user, limitTo]);
 
-  return { campaigns, loading };
+  return { sessions, loading };
 }
 
-// ── Create a new campaign (writes to Firestore) ───────────
-export function useCreateCampaign() {
-  const { user } = useAuthState();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function createCampaign(input: NewCampaignInput): Promise<string | null> {
-    if (!user) {
-      setError("Not signed in.");
-      return null;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      const docRef = await addDoc(collection(db, "campaigns"), {
-        companyId:         user.uid,
-        companyName:       input.companyName,
-        role:              input.role,
-        yearsExperience:   input.yearsExperience,
-        skills:            input.skills,
-        otherRequirements: input.otherRequirements,
-        applicantCap:      input.applicantCap,
-        applicantCount:    0,
-        availableSlots:    input.availableSlots,
-        status:            "Active",
-        linkToken:         input.linkToken,
-        createdAt:         serverTimestamp(),
-      });
-      return docRef.id;
-    } catch (e: any) {
-      setError(e.message ?? "Failed to create campaign.");
-      return null;
-    } finally {
-      setSubmitting(false);
-    }
+// ── Compute dashboard stats from sessions ─────────────────
+export function useDashboardStats(sessions: PracticeSession[]): DashboardStats {
+  if (sessions.length === 0) {
+    return { totalSessions: 0, avgScore: 0, totalMinutes: 0, streak: 0 };
   }
 
-  return { createCampaign, submitting, error };
+  const totalSessions = sessions.length;
+
+  const avgScore = Math.round(
+    sessions.reduce((sum, s) => sum + avg(s.scores), 0) / totalSessions
+  );
+
+  const totalMinutes = sessions.reduce((sum, s) => {
+    const n = parseInt(s.duration);
+    return sum + (isNaN(n) ? 0 : n);
+  }, 0);
+
+  const streak = computeStreak(sessions);
+
+  return { totalSessions, avgScore, totalMinutes, streak };
 }
 
-// ── Increment applicant count when someone applies ────────
-export async function incrementApplicantCount(campaignId: string, applicantCap: number, currentCount: number): Promise<boolean> {
-  if (currentCount >= applicantCap) return false;
-  await updateDoc(doc(db, "campaigns", campaignId), {
-    applicantCount: increment(1),
-  });
-  return true;
+// ── Helpers ───────────────────────────────────────────────
+function computeStreak(sessions: PracticeSession[]): number {
+  if (!sessions.length) return 0;
+  const days = new Set(
+    sessions.map(s => {
+      const d = new Date(s.createdAt);
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    })
+  );
+  let streak = 0;
+  const today = new Date();
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (days.has(key)) streak++;
+    else if (i > 0) break;
+  }
+  return streak;
+}
+
+function formatDate(d: Date): string {
+  const now  = new Date();
+  const diff = Math.floor((now.getTime() - d.getTime()) / 1000);
+  if (diff < 3600)  return `${Math.floor(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
+  if (diff < 172800) return "Yesterday";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
