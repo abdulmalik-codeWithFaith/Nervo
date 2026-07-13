@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CompaniesStyles } from "@/components/companies-ui";
-import { useCompanyProfile, useCreateCampaign } from "@/lib/hooks/useCandidateData";
+
+import { useCompanyProfile, useCreateCampaign } from "@/lib/hooks/useCompanyData";
 
 // ── Helpers ────────────────────────────────────────────────
 function generateToken(role: string) {

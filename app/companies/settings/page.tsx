@@ -7,7 +7,7 @@ import {
   Globe, ShieldCheck, Zap,
 } from "lucide-react";
 import { CompaniesStyles } from "@/components/companies-ui";
-import { useCompanyProfile } from "@/lib/hooks/useCandidateData";
+import { useCompanyProfile } from "@/lib/hooks/useCompanyData";
 
 type Tab = "Profile" | "Team" | "Billing" | "Notifications" | "Integrations";
 
